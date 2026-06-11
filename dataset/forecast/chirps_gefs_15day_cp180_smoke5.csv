@@ -1,0 +1,6 @@
+issue_date,valid_date,precip_mm_mean,source,source_url
+2015-03-05,2015-03-20,0.0,CHIRPS-GEFS v3 15_day global,https://data.chc.ucsb.edu/products/CHIRPS-GEFS/v3/15_day/global/data/2015/c3g_2015.03.05.tif
+2015-03-17,2015-04-01,0.003386475844308734,CHIRPS-GEFS v3 15_day global,https://data.chc.ucsb.edu/products/CHIRPS-GEFS/v3/15_day/global/data/2015/c3g_2015.03.17.tif
+2015-03-29,2015-04-13,17.128925323486328,CHIRPS-GEFS v3 15_day global,https://data.chc.ucsb.edu/products/CHIRPS-GEFS/v3/15_day/global/data/2015/c3g_2015.03.29.tif
+2015-04-10,2015-04-25,7.370432376861572,CHIRPS-GEFS v3 15_day global,https://data.chc.ucsb.edu/products/CHIRPS-GEFS/v3/15_day/global/data/2015/c3g_2015.04.10.tif
+2015-04-22,2015-05-07,36.39393615722656,CHIRPS-GEFS v3 15_day global,https://data.chc.ucsb.edu/products/CHIRPS-GEFS/v3/15_day/global/data/2015/c3g_2015.04.22.tif

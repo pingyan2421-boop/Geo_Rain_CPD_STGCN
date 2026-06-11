@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Virtual Environments
+venv/
+env/
+.env
+
+# Large meteorological raster slices and caches
+*.tif
+*.nc
+dataset/forecast/chirps_gefs_15day_cache/
+
+# Execution Outputs
+output/pipeline_gefs15_*
+output/pipeline_distilled_*
+output/pipeline_event_*
+output/pipeline_teacher_*
+*.log

@@ -1,0 +1,32 @@
+{
+  "source": "CHIRPS-2.0 global_daily tifs p05",
+  "source_url_base": "https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_daily/tifs/p05",
+  "resolution_degree": 0.05,
+  "bbox_landslide": [
+    98.91454315185547,
+    98.93871307373047,
+    30.577224731445312,
+    30.59276580810547
+  ],
+  "bbox_crop": [
+    98.66454315185547,
+    99.18871307373047,
+    30.327224731445312,
+    30.84276580810547
+  ],
+  "window": {
+    "row_start": 383,
+    "row_end": 394,
+    "col_start": 5573,
+    "col_end": 5584
+  },
+  "date_start": "2014-10-24",
+  "date_end": "2014-10-24",
+  "days": 1,
+  "outputs": {
+    "crop_csv": ".\\dataset\\rainfall\\chirps_crop_smoke_cache\\chirps_crop\\chirps_crop_daily.csv",
+    "crop_npz": ".\\dataset\\rainfall\\chirps_crop_smoke_cache\\chirps_crop\\chirps_crop_daily.npz",
+    "daily_mean_csv": ".\\dataset\\rainfall\\chirps_crop_smoke_cache\\chirps_daily.csv",
+    "daily_crop_cache_dir": ".\\dataset\\rainfall\\chirps_crop_smoke_cache\\chirps_crop\\daily"
+  }
+}
