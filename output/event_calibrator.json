@@ -1,0 +1,27 @@
+{
+    "coefs": [
+        0.7684466266004738,
+        -0.03873009956114242,
+        0.06536673800334415,
+        -0.010406811601144783,
+        0.01148192330699644,
+        0.15310009441030814,
+        -0.007844256445235755,
+        -0.005176659644564473,
+        0.005691077063679983,
+        -0.0025755375325812
+    ],
+    "intercept": -3.793829267498653,
+    "features": [
+        "historical_trigger_probability",
+        "antecedent_wetness_index",
+        "rain_mm",
+        "spell_rain_sum",
+        "spell_peak_rain",
+        "spell_days",
+        "pre3_rain_sum",
+        "pre7_rain_sum",
+        "pre15_rain_sum",
+        "pre30_rain_sum"
+    ]
+}

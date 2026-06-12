@@ -528,7 +528,9 @@ def load_train_distillation_targets(targets_dir, train_idx, positive_only=False,
                 print(f">> distillation disabled: mean {gain_col}={mean_gain:.6f} < min_mean_gain={float(min_mean_gain):.6f}")
                 return (None, None)
         weight_path = os.path.join(targets_dir, "train_distill_weights.npy")
-        if os.path.exists(weight_path):
+        if os.environ.get("IGNORE_DISTILL_WEIGHTS", "0") == "1":
+            print(">> IGNORE_DISTILL_WEIGHTS is set, skipping 3D weights")
+        elif os.path.exists(weight_path):
             sample_weight = np.load(weight_path).astype(np.float32)
             if int(horizon_start) > 0:
                 horizon_mask = np.zeros((1, int(n_pred), 1, 1), dtype=(np.float32))
@@ -604,6 +606,11 @@ def stage_histogram(stage_seq, starts, n_his, n_pred):
 
 
 def train_one_fold(fold_name, raw_seq, stage_seq, adj, train_idx, val_idx, test_idx, args, rain_seq=None, rain_feature_cols=None, rain_susceptibility=None, hydro_flow_weight=None, aligned_rain=None, forecast_context=None, forecast_feature_cols=None, event_context=None, event_feature_cols=None, split_diagnostics=None):
+    from pathlib import Path
+    pred_dir = Path(args.output_dir) / fold_name / "predictions"
+    if (pred_dir / "test_pred_real.npy").exists():
+        print(f"Skipping fold {fold_name} as predictions already exist in {pred_dir}")
+        return None
     tf.compat.v1.reset_default_graph()
     fold_seed = args.seed + sum(ord(ch) for ch in fold_name) % 10000
     np.random.seed(fold_seed)
@@ -780,10 +787,14 @@ def train_one_fold(fold_name, raw_seq, stage_seq, adj, train_idx, val_idx, test_
                 distill_huber = distill_huber * spatial_mask
 
         if y_teacher_weight is not None:
-            weighted = distill_huber * y_teacher_weight
+            # Non-active period down-weighting: stage_level is 0.0 to 1.0 based on CPD stages
+            distill_stage_multiplier = tf.maximum(0.1, tf.reshape(stage_level, [-1, 1, 1, 1]))
+            weighted = distill_huber * y_teacher_weight * distill_stage_multiplier
+            # Normalizing only by y_teacher_weight to allow the batch loss to drop when stage is inactive
             distill_loss = tf.reduce_mean(weighted) / tf.maximum(tf.reduce_mean(y_teacher_weight), 1e-06)
         else:
-            distill_loss = tf.reduce_mean(distill_huber)
+            distill_stage_multiplier = tf.maximum(0.1, tf.reshape(stage_level, [-1, 1, 1, 1]))
+            distill_loss = tf.reduce_mean(distill_huber * distill_stage_multiplier)
     last_step = x[:, -1:, :, :]
     diff_pred = y_pred - last_step
     diff_true = y_true - last_step
@@ -1374,7 +1385,7 @@ def main():
                     fold_args.residual_scale = args.rolling_residual_scale
                     fold_args.cpd_transition_weight = args.rolling_transition_weight
                 print(f">> Fold params for {name}: residual_scale={fold_args.residual_scale}, cpd_transition_weight={fold_args.cpd_transition_weight}, cpd_stage_weight={fold_args.cpd_stage_weight}")
-                rows.append(train_one_fold(name,
+                row = train_one_fold(name,
                   raw_seq,
                   stage_seq,
                   adj,
@@ -1391,8 +1402,10 @@ def main():
                   forecast_feature_cols=forecast_feature_cols,
                   event_context=event_context,
                   event_feature_cols=event_feature_cols,
-                  split_diagnostics=(split_diagnostics.get(name))))
-                write_rows(os.path.join(args.output_dir, "cpd_split_results.csv"), rows)
+                  split_diagnostics=(split_diagnostics.get(name)))
+                if row is not None:
+                    rows.append(row)
+                    write_rows(os.path.join(args.output_dir, "cpd_split_results.csv"), rows)
 
     result_path = os.path.join(args.output_dir, "cpd_split_results.csv")
     write_rows(result_path, rows)

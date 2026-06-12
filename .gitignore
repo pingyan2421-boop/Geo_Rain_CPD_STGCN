@@ -24,4 +24,7 @@ output/pipeline_gefs15_*
 output/pipeline_distilled_*
 output/pipeline_event_*
 output/pipeline_teacher_*
+output/pipeline_hybrid_*
+output/mechanism_moe_multiscale/
+scratch/
 *.log

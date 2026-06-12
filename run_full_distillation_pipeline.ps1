@@ -36,7 +36,7 @@ foreach ($seed in $SEEDS) {
     }
 
     Write-Host "-> [Seed $seed] Generating Continuous Gate Teacher Targets..."
-    Invoke-Expression "& $PYTHON -m scripts.generate_continuous_gate_teachers --base_dir_official $B_DIR --base_dir_fallback $FALL_DIR --output_dir $TEACHER_DIR"
+    Invoke-Expression "& $PYTHON -m scripts.generate_continuous_gate_teachers --base_dir_official $B_DIR --base_dir_fallback $FALL_DIR --output_dir $TEACHER_DIR --enable_sample_weight --enable_horizon_weight --enable_node_weight"
 
     foreach ($fold in $FOLDS) {
         $T_DIR = "${TEACHER_DIR}/${fold}/predictions"

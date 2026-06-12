@@ -6,6 +6,7 @@ import subprocess
 import sys
 import shutil
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
 from scripts.train_event_calibrator_impl import load_calibrator
 from scripts.event_source_switch_posthoc_moe_impl import load_event_features
 from data_loader.date_loader import load_and_clean_data
@@ -54,17 +55,25 @@ def generate_teachers(base_dir_official, base_dir_fallback, output_dir, args, fo
 
     gate_summary_rows = []
 
+    # --- Phase 1: Global Feature Collection ---
+    print("=== Phase 1: Global Feature Collection for Unified Gate ===")
+    global_X_train = []
+    global_y_train = []
+    
     for fold in folds:
-        print(f"=== Generating Teachers for fold {fold} ===")
         val_idx_path = os.path.join(base_dir_official, fold, "predictions", "val_indices.npy")
         if not os.path.exists(val_idx_path):
-            print(f"Skipping fold {fold}: Missing val files")
             continue
+            
+        try:
+            cp_idx = int(fold.split('_')[1])
+            val_cpd_stage = cp_idx / 200.0
+        except:
+            val_cpd_stage = 1.0
             
         val_idx = np.load(val_idx_path)
         val_is_fallback = forecast_mask("dataset/forecast/chirps_gefs_15day_cp180_climfallback.csv", "dataset/inter228_5241.csv", val_idx, 12, 5, "forecast_is_fallback")
         
-        # 1. Fit LR on Baseline errors to get Gate
         val_off_pred = np.load(os.path.join(base_dir_official, fold, "predictions", "val_pred_real.npy"))
         val_fall_pred = np.load(os.path.join(base_dir_fallback, fold, "predictions", "val_pred_real.npy"))
         val_true = np.load(os.path.join(base_dir_official, fold, "predictions", "val_true_real.npy"))
@@ -73,46 +82,79 @@ def generate_teachers(base_dir_official, base_dir_fallback, output_dir, args, fo
         val_probs = calibrator.predict_proba(pd.DataFrame(feat))
         val_wetness = feat["antecedent_wetness_index"]
         
+        val_cpd_feat = np.full_like(val_probs, val_cpd_stage)
+        
         val_off_err = np.mean(np.abs(val_off_pred - val_true), axis=(1,2,3))
         val_fall_err = np.mean(np.abs(val_fall_pred - val_true), axis=(1,2,3))
         y_val = (val_fall_err < val_off_err).astype(int)
         
         train_mask = val_is_fallback > 0.5
-        X_val = np.column_stack([val_probs, val_wetness])
+        X_val = np.column_stack([val_probs, val_wetness, val_cpd_feat])
         
-        lr = LogisticRegression(class_weight='balanced')
-        used_default = False
-        val_auc, val_acc, val_loss = 0.0, 0.0, 0.0
-        
-        if train_mask.sum() > 5 and len(np.unique(y_val[train_mask])) > 1:
-            lr.fit(X_val[train_mask], y_val[train_mask])
-            coef_prob = lr.coef_[0][0]
-            coef_wetness = lr.coef_[0][1]
-            bias = lr.intercept_[0]
-            print(f"[{fold}] Fitted LR parameters: coef_prob={coef_prob:.3f}, coef_wetness={coef_wetness:.3f}, bias={bias:.3f}")
-            # Pseudo metrics for summary
-            pred_p = lr.predict_proba(X_val[train_mask])[:, 1]
-            val_acc = np.mean((pred_p > 0.5) == y_val[train_mask])
-        else:
-            print(f"[{fold}] Insufficient fallback variations in val. Falling back to default params.")
-            coef_prob, coef_wetness, bias = 5.0, 5.0, -3.5
-            lr.coef_ = np.array([[coef_prob, coef_wetness]])
-            lr.intercept_ = np.array([bias])
-            used_default = True
-            
-        gate_summary_rows.append({
-            "fold": fold,
-            "fallback_val_samples": train_mask.sum(),
-            "positive_labels": y_val[train_mask].sum() if train_mask.sum() > 0 else 0,
-            "negative_labels": train_mask.sum() - (y_val[train_mask].sum() if train_mask.sum() > 0 else 0),
-            "coef_prob": coef_prob,
-            "coef_wetness": coef_wetness,
-            "bias": bias,
-            "used_default_params": used_default,
-            "val_accuracy": val_acc
-        })
+        if train_mask.sum() > 0:
+            global_X_train.append(X_val[train_mask])
+            global_y_train.append(y_val[train_mask])
 
-        # 2. Generate Posthoc Experts
+    # --- Phase 2: Global LR Training ---
+    print("=== Phase 2: Training Global Unified Gate ===")
+    scaler = StandardScaler()
+    lr = LogisticRegression(class_weight='balanced', C=10.0, max_iter=1000)
+    used_default = False
+    
+    if len(global_X_train) > 0:
+        X_all = np.concatenate(global_X_train, axis=0)
+        y_all = np.concatenate(global_y_train, axis=0)
+        print(f"Global training data size: {len(X_all)}, Positive ratio: {np.mean(y_all):.3f}")
+        if len(X_all) > 5 and len(np.unique(y_all)) > 1:
+            X_all_scaled = scaler.fit_transform(X_all)
+            lr.fit(X_all_scaled, y_all)
+            # Rescale coefficients back to original scale to match the inference formula:
+            # logit = coef * x + bias
+            # scaled_x = (x - mean) / std
+            # coef_scaled * scaled_x + bias_scaled = (coef_scaled / std) * x + (bias_scaled - coef_scaled * mean / std)
+            orig_coef = lr.coef_[0] / scaler.scale_
+            orig_bias = lr.intercept_[0] - np.sum(lr.coef_[0] * scaler.mean_ / scaler.scale_)
+            
+            coef_prob, coef_wetness, coef_cpd = orig_coef
+            bias = orig_bias
+            if np.sum(np.abs(orig_coef)) < 1e-4:
+                print("Global LR yielded near-zero coefficients (likely due to zero variance in validation features). Falling back.")
+                used_default = True
+            else:
+                print(f"Global LR Fitted: probs={coef_prob:.3f}, wetness={coef_wetness:.3f}, cpd_stage={coef_cpd:.3f}, bias={bias:.3f}")
+        else:
+            used_default = True
+    else:
+        used_default = True
+        
+    if used_default:
+        print("Insufficient global variations. Falling back to default unified params.")
+        coef_prob, coef_wetness, coef_cpd, bias = 5.0, 5.0, 2.0, -3.5
+        lr.coef_ = np.array([[coef_prob, coef_wetness, coef_cpd]])
+        lr.intercept_ = np.array([bias])
+
+    gate_summary_rows.append({
+        "fold": "GLOBAL",
+        "coef_prob": coef_prob,
+        "coef_wetness": coef_wetness,
+        "coef_cpd": coef_cpd,
+        "bias": bias,
+        "used_default_params": used_default
+    })
+
+    # --- Phase 3: Generation & Weight Assignment ---
+    for fold in folds:
+        print(f"=== Generating Teachers & Weights for fold {fold} ===")
+        val_idx_path = os.path.join(base_dir_official, fold, "predictions", "val_indices.npy")
+        if not os.path.exists(val_idx_path):
+            continue
+            
+        try:
+            cp_idx = int(fold.split('_')[1])
+            val_cpd_stage = cp_idx / 200.0
+        except:
+            val_cpd_stage = 1.0
+
         print(f"[{fold}] Generating Official Expert (response_only/k=3/t=0.90/g=200.0)...")
         off_expert_dir = run_posthoc(base_dir_official, fold, "response_only", 0.90, 200.0, "off")
         
@@ -122,55 +164,42 @@ def generate_teachers(base_dir_official, base_dir_fallback, output_dir, args, fo
         print(f"[{fold}] Generating Fallback High-risk Expert (all/k=3/t=0.90/g=200.0)...")
         fall_high_expert_dir = run_posthoc(base_dir_fallback, fold, "all", 0.90, 200.0, "fall_high")
 
-        # 3. Combine Experts & Generate 3D Weights
         for split in ["train", "val", "test"]:
             idx_path = os.path.join(base_dir_official, fold, "predictions", f"{split}_indices.npy")
             if not os.path.exists(idx_path):
                 continue
             idx = np.load(idx_path)
             
-            # Load expert predictions
             off_pred = np.load(os.path.join(off_expert_dir, f"{split}_pred_real.npy"))
-            fall_low_pred = np.load(os.path.join(fall_low_expert_dir, f"{split}_pred_real.npy"))
             fall_high_pred = np.load(os.path.join(fall_high_expert_dir, f"{split}_pred_real.npy"))
             
             feat = load_event_features("output/rainfall_event_catalog/rainfall_event_catalog.csv", "dataset/inter228_5241.csv", idx, 12, 5, list(calibrator.features))
             probs = calibrator.predict_proba(pd.DataFrame(feat))
             wetness = feat["antecedent_wetness_index"]
             
-            logits = coef_prob * probs + coef_wetness * wetness + bias
+            logits = coef_prob * probs + coef_wetness * wetness + coef_cpd * val_cpd_stage + bias
             w = sigmoid(logits)
             w_reshaped = w.reshape(-1, 1, 1, 1)
             
             is_fallback = forecast_mask("dataset/forecast/chirps_gefs_15day_cp180_climfallback.csv", "dataset/inter228_5241.csv", idx, 12, 5, "forecast_is_fallback")
             is_fallback_reshaped = is_fallback.reshape(-1, 1, 1, 1)
             
-            # Teacher Blend (5.5)
-            # teacher = official if official source
-            # teacher = (1 - w) * fallback_low_risk_expert + w * fallback_high_risk_expert if fallback source
-            # Force best-pair posthoc (official vs fallback_high)
             fallback_teacher = fall_high_pred
             teacher_pred = (1 - is_fallback_reshaped) * off_pred + is_fallback_reshaped * fallback_teacher
             
-            # 3D Weight Construction (5.6)
-            sample_weight = np.ones(len(idx)) * 0.5
-            sample_weight[is_fallback] = 2.0 # Fallback High
+            sample_weight = np.ones(len(idx)) * 1.0
+            sample_weight[is_fallback] = 0.5 # Downweight fallback noise
+            sample_weight[~is_fallback] = 2.0 # Boost official high-risk events
             
-            # Broadcast to 3D shape: (samples, 5, N, 1)
             horizon_weights_5 = horizon_weights[:5].reshape(1, 5, 1, 1)
-            
             w_sample = sample_weight.reshape(-1, 1, 1, 1) if args.enable_sample_weight else 1.0
             w_horizon = horizon_weights_5 if args.enable_horizon_weight else 1.0
             w_node = node_weights.reshape(1, 1, -1, 1) if args.enable_node_weight else 1.0
             
             weight_3d = w_sample * w_horizon * w_node
             weight_3d = np.broadcast_to(weight_3d, (len(idx), 5, len(node_weights), 1)).copy()
-            
-            # Normalize batch mean to 1.0
             weight_3d = weight_3d / np.mean(weight_3d)
-            # Relax the safety clip to 500.0 so we don't destroy the extreme nodes
             weight_3d = np.clip(weight_3d, 0.0, 500.0)
-            # Re-normalize to ensure mean is exactly 1.0
             weight_3d = weight_3d / np.mean(weight_3d)
 
             out_path = os.path.join(output_dir, fold, "predictions")
@@ -182,6 +211,7 @@ def generate_teachers(base_dir_official, base_dir_fallback, output_dir, args, fo
                     "sample_start": idx,
                     "gate_weight": w,
                     "event_risk": probs,
+                    "cpd_stage": val_cpd_stage,
                     "is_fallback": is_fallback.astype(int)
                 })
                 df.to_csv(os.path.join(out_path, "distillation_sample_metrics.csv"), index=False)
@@ -195,7 +225,7 @@ def generate_teachers(base_dir_official, base_dir_fallback, output_dir, args, fo
             if os.path.exists(true_path):
                 shutil.copy2(true_path, os.path.join(out_path, f"{split}_true_real.npy"))
             shutil.copy2(idx_path, os.path.join(out_path, f"{split}_indices.npy"))
-
+            
             print(f"Saved {fold} {split} teacher predictions to {out_path} (HighRisk: {np.sum((is_fallback) & (w >= 0.5))})")
 
     # Save summary

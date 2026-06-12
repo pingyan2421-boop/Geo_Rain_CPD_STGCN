@@ -32,7 +32,7 @@ def calculate_metrics():
     methods = [
         "pipeline_gefs15", "pipeline_gefs15_nosar", 
         "pipeline_distilled_nosar", "pipeline_distilled_noweight",
-        "pipeline_distilled"
+        "pipeline_distilled", "pipeline_hybrid"
     ]
     folds = ["cp_160", "cp_180"]
     
@@ -62,12 +62,16 @@ def calculate_metrics():
 
         for fold in folds:
             # Get Gate LR parameters
-            coef_prob, coef_wetness, bias = 5.0, 5.0, -3.5
+            coef_prob, coef_wetness, coef_cpd, bias = 5.0, 5.0, 2.0, -3.5
             if gate_summary is not None:
                 row = gate_summary[gate_summary["fold"] == fold]
+                if row.empty: # Fallback to GLOBAL if fold not found
+                    row = gate_summary[gate_summary["fold"] == "GLOBAL"]
                 if not row.empty:
                     coef_prob = row.iloc[0]["coef_prob"]
                     coef_wetness = row.iloc[0]["coef_wetness"]
+                    if "coef_cpd" in row.columns:
+                        coef_cpd = row.iloc[0]["coef_cpd"]
                     bias = row.iloc[0]["bias"]
 
             test_idx_path = f"output/pipeline_gefs15_seed{seed}/{fold}/predictions/test_indices.npy"
@@ -75,13 +79,37 @@ def calculate_metrics():
                 continue
             test_idx = np.load(test_idx_path)
             
+            try:
+                cp_idx = int(fold.split('_')[1])
+                val_cpd_stage = cp_idx / 200.0
+            except:
+                val_cpd_stage = 1.0
+            
             # Predict Event Context Features
             feat = load_event_features("output/rainfall_event_catalog/rainfall_event_catalog.csv", "dataset/inter228_5241.csv", test_idx, 12, 5, list(calibrator.features))
             probs = calibrator.predict_proba(pd.DataFrame(feat))
             wetness = feat["antecedent_wetness_index"]
-            w = sigmoid(coef_prob * probs + coef_wetness * wetness + bias)
+            w = sigmoid(coef_prob * probs + coef_wetness * wetness + coef_cpd * val_cpd_stage + bias)
             is_fallback = forecast_mask("dataset/forecast/chirps_gefs_15day_cp180_climfallback.csv", "dataset/inter228_5241.csv", test_idx, 12, 5, "forecast_is_fallback")
             
+            gefs15_pred_file = f"output/pipeline_gefs15_seed{seed}/{fold}/predictions/test_pred_real.npy"
+            distilled_pred_file = f"output/pipeline_distilled_seed{seed}/{fold}/predictions/test_pred_real.npy"
+            true_file = f"output/pipeline_gefs15_seed{seed}/{fold}/predictions/test_true_real.npy"
+            
+            hybrid_dir = f"output/pipeline_hybrid_seed{seed}/{fold}/predictions"
+            os.makedirs(hybrid_dir, exist_ok=True)
+            
+            if os.path.exists(gefs15_pred_file) and os.path.exists(distilled_pred_file) and os.path.exists(true_file):
+                gefs15_pred = np.load(gefs15_pred_file)
+                distilled_pred = np.load(distilled_pred_file)
+                true_data = np.load(true_file)
+                
+                hybrid_pred = np.copy(gefs15_pred)
+                hybrid_pred[~is_fallback] = distilled_pred[~is_fallback]
+                
+                np.save(f"{hybrid_dir}/test_pred_real.npy", hybrid_pred)
+                np.save(f"{hybrid_dir}/test_true_real.npy", true_data)
+
             # Segments
             seg_masks = {
                 "official": ~is_fallback,
